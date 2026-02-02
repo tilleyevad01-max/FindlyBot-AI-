@@ -1,3 +1,4 @@
 aiogram==2.25.1
-googlesearch-python
-flask
+googlesearch-python==1.2.3
+flask==3.0.0
+gunicorn==21.2.0
