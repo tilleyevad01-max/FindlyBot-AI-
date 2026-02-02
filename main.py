@@ -1,7 +1,7 @@
 import os
 import logging
 import requests
-import urllib.parse  # Qidiruv so'rovini formatlash uchun
+import urllib.parse
 from threading import Thread
 from flask import Flask
 from aiogram import Bot, Dispatcher, types, executor
@@ -14,10 +14,9 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Findly AI is live!"
+    return "Findly AI is live and diagnosing!"
 
 def run_web():
-    # Render uchun standart port 10000
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
 
@@ -26,7 +25,7 @@ def keep_alive():
     t.daemon = True
     t.start()
 
-# --- Sozlamalar (Environment Variables) ---
+# --- Sozlamalar ---
 API_TOKEN = os.getenv('BOT_TOKEN')
 G_API_KEY = os.getenv('GOOGLE_API_KEY')
 G_CX = os.getenv('GOOGLE_CX')
@@ -42,37 +41,35 @@ class SearchSteps(StatesGroup):
     category = State()
     topic = State()
 
-# --- Lug'at ---
 MESSAGES = {
     'uz': {
-        'welcome': "Assalomu aleykum, botga xush kelibsiz. Qaysi fan uchun materiallar izlamoqdasiz?",
-        'cat_select': "Sizga kerakli material turini tanlang:",
-        'topic_ask': "Sizga kerakli mavzu nomi?",
-        'searching': "🔍 Findly qidirmoqda...",
+        'welcome': "Assalomu aleykum! Qaysi fan uchun materiallar izlamoqdasiz?",
+        'cat_select': "Material turini tanlang:",
+        'topic_ask': "Mavzu nomini yozing:",
+        'searching': "🔍 Findly qidirmoqda va diagnostika qilmoqda...",
         'not_found': "Uzur, ma'lumot topilmadi 😞",
         'buttons': ["Maqola/Dissertatsiya", "Kitob", "Prezentatsiya", "Video rolik"]
     },
     'ru': {
-        'welcome': "Здравствуйте! По какому предмету вы ищете материалы?",
-        'cat_select': "Выберите тип материала:",
-        'topic_ask': "Какая тема вам нужна?",
-        'searching': "🔍 Findly ищет...",
-        'not_found': "Извините, ничего не найдено 😞",
+        'welcome': "Здравствуйте! По какому предмету нужны материалы?",
+        'cat_select': "Выберите тип:",
+        'topic_ask': "Введите тему:",
+        'searching': "🔍 Findly ищет и диагностирует...",
+        'not_found': "Ничего не найдено 😞",
         'buttons': ["Статья/Диссертация", "Книга", "Презентация", "Видео ролик"]
     },
     'eng': {
         'welcome': "Welcome! Which subject are you looking for?",
-        'cat_select': "Select the material type:",
-        'topic_ask': "Which topic do you need?",
-        'searching': "🔍 Findly is searching...",
-        'not_found': "Sorry, no results found 😞",
+        'cat_select': "Select type:",
+        'topic_ask': "Enter topic:",
+        'searching': "🔍 Findly is searching and diagnosing...",
+        'not_found': "No results found 😞",
         'buttons': ["Article/Dissertation", "Book", "Presentation", "Video clip"]
     }
 }
 
-# --- Google Search funksiyasi ---
+# --- Google Search Diagnostika bilan ---
 def google_search(query):
-    # Bo'shliq va maxsus belgilarni URL formatiga o'tkazish
     safe_query = urllib.parse.quote_plus(query)
     url = f"https://www.googleapis.com/customsearch/v1?key={G_API_KEY}&cx={G_CX}&q={safe_query}"
     
@@ -80,23 +77,31 @@ def google_search(query):
         response = requests.get(url)
         data = response.json()
         
-        # Logda qidiruv so'rovini tekshirish
-        logging.info(f"DEBUG: Qidirilmoqda: {query}")
+        logging.info(f"DEBUG: Qidiruv so'rovi: {query}")
+
+        # PRO VISION DIAGNOSTIKA
+        if 'error' in data:
+            return [f"❌ Google API xatosi: {data['error']['message']}"]
         
+        if 'searchInformation' in data:
+            total = data['searchInformation'].get('totalResults', '0')
+            if total == '0':
+                return [f"⚠️ Google topdi, lekin natija 0 ta.\n\nEhtimoliy sabab: CX sozlamasida 'Search the entire web' ochiq emas yoki siz kiritgan saytlar ichida bu mavzu yo'q."]
+
         results = []
         if 'items' in data:
             for item in data['items'][:5]:
                 results.append(f"✅ {item['title']}\n🔗 {item['link']}")
         return results
     except Exception as e:
-        logging.error(f"Google API Error: {e}")
-        return None
+        logging.error(f"Tizim xatosi: {e}")
+        return [f"❌ Tizim xatosi: {str(e)}"]
 
 # --- Handlers ---
 @dp.message_handler(commands=['start'], state='*')
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.finish()
-    await message.answer("Tilni tanlang / Choose language:\n/uz - O'zbekcha\n/ru - Русский\n/eng - English")
+    await message.answer("Tilni tanlang:\n/uz - O'zbekcha\n/ru - Русский\n/eng - English")
     await SearchSteps.language.set()
 
 @dp.message_handler(commands=['uz', 'ru', 'eng'], state=SearchSteps.language)
@@ -110,10 +115,9 @@ async def set_lang(message: types.Message, state: FSMContext):
 async def get_subject(message: types.Message, state: FSMContext):
     await state.update_data(subject=message.text)
     data = await state.get_data()
-    lang = data['lang']
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add(*MESSAGES[lang]['buttons'])
-    await message.answer(MESSAGES[lang]['cat_select'], reply_markup=markup)
+    markup.add(*MESSAGES[data['lang']]['buttons'])
+    await message.answer(MESSAGES[data['lang']]['cat_select'], reply_markup=markup)
     await SearchSteps.category.set()
 
 @dp.message_handler(state=SearchSteps.category)
@@ -129,29 +133,9 @@ async def final_search(message: types.Message, state: FSMContext):
     lang = data['lang']
     await message.answer(MESSAGES[lang]['searching'])
     
-    subject = data['subject']
-    topic = message.text
-    category = data['category']
-    
-    # 1-qadam: Soddalashtirilgan qidiruv so'rovi
-    query = f"{subject} {topic}"
-    
-    # Kategoriyaga qarab qo'shimcha filtrlar
-    if any(x in category for x in ["Maqola", "Dissertatsiya", "Article", "Статья"]):
-        query += " filetype:pdf"
-    elif any(x in category for x in ["Kitob", "Book", "Книга"]):
-        query += " darslik filetype:pdf"
-    elif any(x in category for x in ["Prezentatsiya", "Presentation", "Презентация"]):
-        query += " filetype:pptx"
-    elif "Video" in category:
-        query = f"site:youtube.com {subject} {topic}"
-
+    query = f"{data['subject']} {message.text}"
     res = google_search(query)
     
-    # 2-qadam: Agar murakkab so'rov natija bermasa, faqat mavzuni o'zini qidirish
-    if not res:
-        res = google_search(f"{subject} {topic}")
-
     if res:
         await message.answer("\n\n".join(res))
     else:
@@ -160,5 +144,5 @@ async def final_search(message: types.Message, state: FSMContext):
 
 if __name__ == '__main__':
     keep_alive()
-    # Konfliktlarni oldini olish uchun skip_updates=True
+    # skip_updates=True eski xabarlarni tozalaydi
     executor.start_polling(dp, skip_updates=True)
