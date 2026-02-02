@@ -1,17 +1,17 @@
 import os
 import logging
+import wikipedia
 from threading import Thread
 from flask import Flask
 from aiogram import Bot, Dispatcher, types, executor
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.dispatcher import FSMContext
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from duckduckgo_search import DDGS
 
-# --- Web Server ---
+# --- Render uchun Web Server ---
 app = Flask('')
 @app.route('/')
-def home(): return "Findly AI is Active!"
+def home(): return "Wiki Bot is Running!"
 
 def run_web():
     port = int(os.environ.get('PORT', 10000))
@@ -29,52 +29,34 @@ bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
-class SearchSteps(StatesGroup):
-    language = State()
-    subject = State()
-    category = State()
-    topic = State()
+class WikiState(StatesGroup):
+    lang = State()
+    query = State()
 
-MESSAGES = {
+# --- Xabarlar matni ---
+LANG_DATA = {
     'uz': {
-        'welcome': "Qaysi fan bo'yicha material izlaymiz?",
-        'cat_select': "Turini tanlang:",
-        'topic_ask': "Mavzu nomini kiriting:",
-        'searching': "🔍 Qidirilmoqda...",
-        'not_found': "Ma'lumot topilmadi. Boshqacharoq yozib ko'ring.",
-        'buttons': ["Maqola", "Kitob", "Prezentatsiya", "Video"]
+        'ask_info': "Assalomu aleykum, sizga nima haqida ma'lumot kerak?",
+        'next_query': "Yana nima haqida bilmoqchisiz?",
+        'not_found': "Uzur, Wikipedia'da bunday ma'lumot topilmadi 😞",
+        'searching': "🔍 Wikipedia'dan qidiryapman...",
+        'wiki_lang': 'uz'
     },
     'ru': {
-        'welcome': "По какому предмету ищем материал?",
-        'cat_select': "Выберите тип:",
-        'topic_ask': "Введите название темы:",
-        'searching': "🔍 Поиск...",
-        'not_found': "Информация не найдена. Попробуйте другой запрос.",
-        'buttons': ["Статья", "Книга", "Презентация", "Видео"]
+        'ask_info': "Здравствуйте! О чем вам нужна информация?",
+        'next_query': "О чем еще вы хотите узнать?",
+        'not_found': "Извините, такая информация в Википедии не найдена 😞",
+        'searching': "🔍 Ищу в Википедии...",
+        'wiki_lang': 'ru'
     },
-    'eng': {
-        'welcome': "What subject are we searching for?",
-        'cat_select': "Select type:",
-        'topic_ask': "Enter the topic name:",
-        'searching': "🔍 Searching...",
-        'not_found': "Information not found. Try a different query.",
-        'buttons': ["Article", "Book", "Presentation", "Video"]
+    'en': {
+        'ask_info': "Hello! What information do you need?",
+        'next_query': "What else would you like to know about?",
+        'not_found': "Sorry, no such information found on Wikipedia 😞",
+        'searching': "🔍 Searching Wikipedia...",
+        'wiki_lang': 'en'
     }
 }
-
-def free_search(query):
-    try:
-        results = []
-        with DDGS() as ddgs:
-            # Qidiruvni kengaytiramiz
-            ddgs_gen = ddgs.text(query, region='wt-wt', safesearch='off')
-            for i, r in enumerate(ddgs_gen):
-                if i >= 5: break
-                results.append(f"✅ {r['title']}\n🔗 {r['href']}")
-        return results
-    except Exception as e:
-        logging.error(f"Search Error: {e}")
-        return None
 
 # --- Handlers ---
 @dp.message_handler(commands=['start'], state='*')
@@ -82,61 +64,65 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await state.finish()
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add("O'zbekcha 🇺🇿", "Русский 🇷🇺", "English 🇺🇸")
-    await message.answer("Tilni tanlang / Выберите язык / Select language:", reply_markup=markup)
-    await SearchSteps.language.set()
-
-@dp.message_handler(state=SearchSteps.language)
-async def set_lang(message: types.Message, state: FSMContext):
-    text = message.text
-    lang = 'uz' if "O'zbekcha" in text else 'ru' if "Русский" in text else 'eng'
-    await state.update_data(lang=lang)
-    await message.answer(MESSAGES[lang]['welcome'], reply_markup=types.ReplyKeyboardRemove())
-    await SearchSteps.subject.set()
-
-@dp.message_handler(state=SearchSteps.subject)
-async def get_subject(message: types.Message, state: FSMContext):
-    await state.update_data(subject=message.text)
-    data = await state.get_data()
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add(*MESSAGES[data['lang']]['buttons'])
-    await message.answer(MESSAGES[data['lang']]['cat_select'], reply_markup=markup)
-    await SearchSteps.category.set()
-
-@dp.message_handler(state=SearchSteps.category)
-async def get_category(message: types.Message, state: FSMContext):
-    await state.update_data(category=message.text)
-    data = await state.get_data()
-    await message.answer(MESSAGES[data['lang']]['topic_ask'], reply_markup=types.ReplyKeyboardRemove())
-    await SearchSteps.topic.set()
-
-@dp.message_handler(state=SearchSteps.topic)
-async def final_search(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    lang = data['lang']
-    await message.answer(MESSAGES[lang]['searching'])
     
-    # Qidiruvni aqlliroq qilish: Fan + Mavzu + Tur
-    query = f"{data['subject']} {message.text} {data['category']}"
-    
-    # Ma'lumot topish ehtimolini oshirish uchun qo'shimcha filtrlar
-    if "Kitob" in data['category'] or "Книга" in data['category'] or "Book" in data['category']:
-        query += " filetype:pdf OR filetype:epub"
-    if "Prezentatsiya" in data['category'] or "Презентация" in data['category'] or "Presentation" in data['category']:
-        query += " filetype:ppt OR filetype:pptx"
+    welcome_text = (
+        "Iltimos, kerakli tilni tanlang\n"
+        "Пожалуйста, выберите нужный язык\n"
+        "Please select the required language"
+    )
+    await message.answer(welcome_text, reply_markup=markup)
+    await WikiState.lang.set()
 
-    res = free_search(query)
-    
-    if res:
-        await message.answer("\n\n".join(res))
+@dp.message_handler(state=WikiState.lang)
+async def set_language(message: types.Message, state: FSMContext):
+    if "O'zbekcha" in message.text:
+        user_lang = 'uz'
+    elif "Русский" in message.text:
+        user_lang = 'ru'
     else:
-        # Agar topilmasa, soddaroq qidirib ko'ramiz
-        res_simple = free_search(f"{data['subject']} {message.text}")
-        if res_simple:
-            await message.answer("\n\n".join(res_simple))
-        else:
-            await message.answer(MESSAGES[lang]['not_found'])
-    await state.finish()
+        user_lang = 'en'
+        
+    await state.update_data(chosen_lang=user_lang)
+    await message.answer(
+        LANG_DATA[user_lang]['ask_info'], 
+        reply_markup=types.ReplyKeyboardRemove()
+    )
+    await WikiState.query.set()
 
+@dp.message_handler(state=WikiState.query)
+async def get_wiki_info(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    lang_code = data.get('chosen_lang')
+    
+    # Foydalanuvchi /start yozsa, til tanlashga qaytadi
+    if message.text == "/start":
+        await cmd_start(message, state)
+        return
+
+    await message.answer(LANG_DATA[lang_code]['searching'])
+    wikipedia.set_lang(LANG_DATA[lang_code]['wiki_lang'])
+    
+    try:
+        # Wikipedia'dan qisqa ma'lumot olish
+        summary = wikipedia.summary(message.text, sentences=5)
+        page = wikipedia.page(message.text)
+        
+        response = f"📖 **{page.title}**\n\n{summary}\n\n🔗 [To'liq maqola]({page.url})"
+        await message.answer(response, parse_mode="Markdown", disable_web_page_preview=False)
+        
+        # Ma'lumot topilgandan keyin yana so'rash
+        await message.answer(f"✅ {LANG_DATA[lang_code]['next_query']}")
+        
+    except (wikipedia.exceptions.PageError, wikipedia.exceptions.DisambiguationError):
+        # Ma'lumot topilmasa yoki juda ko'p variant bo'lsa
+        await message.answer(LANG_DATA[lang_code]['not_found'])
+        await message.answer(LANG_DATA[lang_code]['next_query'])
+        
+    except Exception as e:
+        logging.error(f"Xatolik: {e}")
+        await message.answer(LANG_DATA[lang_code]['not_found'])
+
+# Botni ishga tushirish
 if __name__ == '__main__':
     keep_alive()
     executor.start_polling(dp, skip_updates=True)
