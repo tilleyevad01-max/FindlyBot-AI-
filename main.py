@@ -1,22 +1,19 @@
 import os
 import logging
+import requests
 from threading import Thread
 from flask import Flask
 from aiogram import Bot, Dispatcher, types, executor
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.dispatcher import FSMContext
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from googlesearch import search
 
 # --- Render uchun Web Server (Keep Alive) ---
 app = Flask('')
-
 @app.route('/')
-def home():
-    return "Findly Bot is running!"
+def home(): return "Findly AI is live!"
 
 def run_web():
-    # Render avtomatik PORT beradi, agar bermasa 8080 ishlatiladi
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
 
@@ -25,51 +22,65 @@ def keep_alive():
     t.daemon = True
     t.start()
 
-# --- Bot Sozlamalari ---
+# --- Sozlamalar ---
 API_TOKEN = os.getenv('BOT_TOKEN')
+G_API_KEY = os.getenv('GOOGLE_API_KEY')
+G_CX = os.getenv('GOOGLE_CX')
+
 logging.basicConfig(level=logging.INFO)
-
-if not API_TOKEN:
-    print("XATO: BOT_TOKEN topilmadi! Render muhitini tekshiring.")
-    exit()
-
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
-# --- FSM (Holatlar) ---
 class SearchSteps(StatesGroup):
     language = State()
     subject = State()
     category = State()
     topic = State()
 
-# --- Matnlar lug'ati ---
+# --- Lug'at (Barcha tillarda) ---
 MESSAGES = {
     'uz': {
-        'welcome': "Assalomu aleykum, botga xush kelibsiz. Qaysi fan uchun materiallar izlamoqdasiz? Iltimos fan nomini hech qanday qistartirishlarsiz va imloviy xatolarsiz yozing, shunda o'zingizga kerakli material topishingiz ancha osonlashadi!!!",
+        'welcome': "Assalomu aleykum, botga xush kelibsiz. Qaysi fan uchun materiallar izlamoqdasiz? Iltimos fan nomini xatolarsiz yozing!",
         'cat_select': "Sizga kerakli material turini tanlang:",
         'topic_ask': "Sizga kerakli mavzu?",
-        'not_found': "Uzur ma'lumot topilmadi😞",
+        'searching': "🔍 Findly rasmiy bazadan qidirmoqda...",
+        'not_found': "Uzur ma'lumot topilmadi 😞",
         'buttons': ["Maqola/Dissertatsiya", "Kitob", "Prezentatsiya", "Video rolik"]
     },
     'ru': {
-        'welcome': "Здравствуйте, добро пожаловать в бот. По какому предметu вы ищете материалы? Пожалуйста, пишите название предмета без сокращений и ошибок!",
-        'cat_select': "Выберите нужный тип материала:",
+        'welcome': "Здравствуйте! По какому предмету вы ищете материалы? Пожалуйста, пишите без ошибок!",
+        'cat_select': "Выберите тип материала:",
         'topic_ask': "Какая тема вам нужна?",
-        'not_found': "Извините, информация не найдена😞",
+        'searching': "🔍 Findly ищет в официальной базе...",
+        'not_found': "Извините, ничего не найдено 😞",
         'buttons': ["Статья/Диссертация", "Книга", "Презентация", "Видео ролик"]
     },
     'eng': {
-        'welcome': "Hello, welcome to the bot. Which subject are you looking for materials for? Please write the subject name without abbreviations or spelling errors!",
-        'cat_select': "Select the type of material you need:",
+        'welcome': "Welcome! Which subject are you looking for? Please write the name without mistakes!",
+        'cat_select': "Select the material type:",
         'topic_ask': "Which topic do you need?",
-        'not_found': "Sorry, no information found😞",
+        'searching': "🔍 Findly is searching official database...",
+        'not_found': "Sorry, no results found 😞",
         'buttons': ["Article/Dissertation", "Book", "Presentation", "Video clip"]
     }
 }
 
-# --- Handlers (Buyruqlar) ---
+# --- Google Search funksiyasi ---
+def google_search(query):
+    url = f"https://www.googleapis.com/customsearch/v1?key={G_API_KEY}&cx={G_CX}&q={query}"
+    try:
+        response = requests.get(url).json()
+        results = []
+        if 'items' in response:
+            for item in response['items'][:5]:
+                results.append(f"✅ {item['title']}\n🔗 {item['link']}")
+        return results
+    except Exception as e:
+        logging.error(f"Google API Error: {e}")
+        return None
+
+# --- Handlers ---
 @dp.message_handler(commands=['start'], state='*')
 async def cmd_start(message: types.Message, state: FSMContext):
     await state.finish()
@@ -88,11 +99,8 @@ async def get_subject(message: types.Message, state: FSMContext):
     await state.update_data(subject=message.text)
     data = await state.get_data()
     lang = data['lang']
-    
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    for btn in MESSAGES[lang]['buttons']:
-        markup.add(btn)
-        
+    markup.add(*MESSAGES[lang]['buttons'])
     await message.answer(MESSAGES[lang]['cat_select'], reply_markup=markup)
     await SearchSteps.category.set()
 
@@ -104,38 +112,25 @@ async def get_category(message: types.Message, state: FSMContext):
     await SearchSteps.topic.set()
 
 @dp.message_handler(state=SearchSteps.topic)
-async def search_engine(message: types.Message, state: FSMContext):
+async def final_search(message: types.Message, state: FSMContext):
     data = await state.get_data()
     lang = data['lang']
-    subject = data['subject']
-    category = data['category']
-    topic = message.text
+    await message.answer(MESSAGES[lang]['searching'])
     
-    query = f"{subject} {topic} {category}"
+    query = f"{data['subject']} {message.text} {data['category']}"
     
-    # Qidiruvni boyitish
-    if "Prezentatsiya" in category or "Presentation" in category:
-        query += " filetype:pptx OR filetype:pdf"
-    elif "Video" in category:
-        query = f"site:youtube.com {subject} {topic}"
+    # Qidiruvni filtrlash
+    if "Prezentatsiya" in data['category'] or "Presentation" in data['category']:
+        query += " filetype:pptx"
+    elif "Video" in data['category']:
+        query = f"site:youtube.com {data['subject']} {message.text}"
 
-    await message.answer("🔍 Findly qidirmoqda...")
+    res = google_search(query)
     
-    try:
-        # googlesearch-python orqali qidiruv
-        search_results = list(search(query, num_results=5, lang=lang))
-        
-        if search_results:
-            text = "✅ Topilgan materiallar:\n\n"
-            for i, link in enumerate(search_results, 1):
-                text += f"{i}. {link}\n"
-            await message.answer(text)
-        else:
-            await message.answer(MESSAGES[lang]['not_found'])
-    except Exception as e:
-        logging.error(f"Error: {e}")
+    if res:
+        await message.answer("\n\n".join(res))
+    else:
         await message.answer(MESSAGES[lang]['not_found'])
-    
     await state.finish()
 
 if __name__ == '__main__':
