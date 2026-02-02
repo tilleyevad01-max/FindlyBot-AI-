@@ -1,6 +1,7 @@
 import os
 import logging
 import requests
+import urllib.parse  # Qidiruv so'rovini formatlash uchun
 from threading import Thread
 from flask import Flask
 from aiogram import Bot, Dispatcher, types, executor
@@ -16,7 +17,7 @@ def home():
     return "Findly AI is live!"
 
 def run_web():
-    # Render uchun standart port 10000 qilib belgilandi
+    # Render uchun standart port 10000
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
 
@@ -25,7 +26,7 @@ def keep_alive():
     t.daemon = True
     t.start()
 
-# --- Sozlamalar ---
+# --- Sozlamalar (Environment Variables) ---
 API_TOKEN = os.getenv('BOT_TOKEN')
 G_API_KEY = os.getenv('GOOGLE_API_KEY')
 G_CX = os.getenv('GOOGLE_CX')
@@ -52,7 +53,7 @@ MESSAGES = {
         'buttons': ["Maqola/Dissertatsiya", "Kitob", "Prezentatsiya", "Video rolik"]
     },
     'ru': {
-        'welcome': "Здравствуйте! По какому предметu вы ищете материалы?",
+        'welcome': "Здравствуйте! По какому предмету вы ищете материалы?",
         'cat_select': "Выберите тип материала:",
         'topic_ask': "Какая тема вам нужна?",
         'searching': "🔍 Findly ищет...",
@@ -71,12 +72,20 @@ MESSAGES = {
 
 # --- Google Search funksiyasi ---
 def google_search(query):
-    url = f"https://www.googleapis.com/customsearch/v1?key={G_API_KEY}&cx={G_CX}&q={query}"
+    # Bo'shliq va maxsus belgilarni URL formatiga o'tkazish
+    safe_query = urllib.parse.quote_plus(query)
+    url = f"https://www.googleapis.com/customsearch/v1?key={G_API_KEY}&cx={G_CX}&q={safe_query}"
+    
     try:
-        response = requests.get(url).json()
+        response = requests.get(url)
+        data = response.json()
+        
+        # Logda qidiruv so'rovini tekshirish
+        logging.info(f"DEBUG: Qidirilmoqda: {query}")
+        
         results = []
-        if 'items' in response:
-            for item in response['items'][:5]:
+        if 'items' in data:
+            for item in data['items'][:5]:
                 results.append(f"✅ {item['title']}\n🔗 {item['link']}")
         return results
     except Exception as e:
@@ -124,9 +133,10 @@ async def final_search(message: types.Message, state: FSMContext):
     topic = message.text
     category = data['category']
     
-    # Aqlli qidiruv so'rovi (Smart Query)
+    # 1-qadam: Soddalashtirilgan qidiruv so'rovi
     query = f"{subject} {topic}"
     
+    # Kategoriyaga qarab qo'shimcha filtrlar
     if any(x in category for x in ["Maqola", "Dissertatsiya", "Article", "Статья"]):
         query += " filetype:pdf"
     elif any(x in category for x in ["Kitob", "Book", "Книга"]):
@@ -138,7 +148,7 @@ async def final_search(message: types.Message, state: FSMContext):
 
     res = google_search(query)
     
-    # Agar natija chiqmasa, oddiyroq qidirib ko'rish (Fallback)
+    # 2-qadam: Agar murakkab so'rov natija bermasa, faqat mavzuni o'zini qidirish
     if not res:
         res = google_search(f"{subject} {topic}")
 
@@ -149,7 +159,6 @@ async def final_search(message: types.Message, state: FSMContext):
     await state.finish()
 
 if __name__ == '__main__':
-    # Render'da bot o'chib qolmasligi uchun Flask ishga tushadi
     keep_alive()
     # Konfliktlarni oldini olish uchun skip_updates=True
     executor.start_polling(dp, skip_updates=True)
